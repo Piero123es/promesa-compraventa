@@ -1,30 +1,27 @@
 """
 Generador de "Promesa de Compraventa" a partir de plantilla.docx
 -----------------------------------------------------------------
-Requisitos (instalar una sola vez):
-    pip install customtkinter docxtpl
+Versión Streamlit (compatible con Streamlit Cloud).
+
+Requisitos (requirements.txt):
+    streamlit
+    docxtpl
+    python-docx
 
 IMPORTANTE:
-Este script usa la librería `docxtpl`, no `python-docx`, porque tu
-plantilla.docx tiene etiquetas tipo Jinja tal cual: {{comprador}},
-{{dni}}, {% for cuota in cuotas %} ... {% endfor %}, etc.
-python-docx NO reemplaza esas etiquetas automáticamente, por eso
-"faltaban datos": el formulario original solo pedía 7 campos y la
-plantilla necesita muchos más (fecha, terreno, precio, cuotas,
-contacto adicional y ejecutivo comercial).
-
-NUEVO: después de rellenar la plantilla, el script fuerza que TODO
-el texto del documento generado quede en fuente Aptos, tamaño 11
-(cuerpo, tablas, encabezados, pies de página, y el estilo "Normal"
-para cualquier texto que no tenga formato explícito).
-
-Coloca este archivo en la misma carpeta que "plantilla.docx"
-(o cambia la variable RUTA_PLANTILLA más abajo).
+- Este script usa `docxtpl`, no `python-docx`, para reemplazar las
+  etiquetas Jinja de plantilla.docx ({{comprador}}, {{dni}},
+  {% for cuota in cuotas %}...{% endfor %}, etc.).
+- El archivo "plantilla.docx" debe estar en el mismo repositorio,
+  junto a este app.py (o ajusta RUTA_PLANTILLA).
+- Después de rellenar la plantilla, se fuerza que TODO el texto
+  quede en fuente Aptos, tamaño 11 (cuerpo, tablas, encabezados,
+  pies de página y el estilo "Normal").
 """
 
 import os
-import customtkinter as ctk
-from tkinter import messagebox, filedialog
+import io
+import streamlit as st
 from docxtpl import DocxTemplate
 from docx.shared import Pt
 from docx.oxml.ns import qn
@@ -32,8 +29,7 @@ from docx.oxml.ns import qn
 # -----------------------------
 # Configuración general
 # -----------------------------
-ctk.set_appearance_mode("light")
-ctk.set_default_color_theme("blue")
+st.set_page_config(page_title="Promesa de Compraventa", page_icon="📄", layout="centered")
 
 RUTA_PLANTILLA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plantilla.docx")
 
@@ -73,10 +69,8 @@ def _procesar_tablas(tablas, nombre_fuente, tamano_pt, mayusculas=True):
 
 def aplicar_fuente_global(documento, nombre_fuente=NOMBRE_FUENTE, tamano_pt=TAMANO_FUENTE, mayusculas=True):
     """Fuerza que TODO el texto del documento use la fuente y tamaño indicados,
-    y lo muestra en MAYÚSCULAS (formato 'todo en mayúsculas' de Word, no cambia
-    el texto real, solo cómo se ve/imprime): cuerpo, tablas, encabezados y pies
-    de página. También actualiza el estilo 'Normal' para que cualquier texto sin
-    formato explícito quede igual."""
+    en MAYÚSCULAS (formato visual de Word, no cambia el texto real): cuerpo,
+    tablas, encabezados y pies de página. También actualiza el estilo 'Normal'."""
     _procesar_parrafos(documento.paragraphs, nombre_fuente, tamano_pt, mayusculas)
     _procesar_tablas(documento.tables, nombre_fuente, tamano_pt, mayusculas)
 
@@ -90,7 +84,6 @@ def aplicar_fuente_global(documento, nombre_fuente=NOMBRE_FUENTE, tamano_pt=TAMA
             _procesar_parrafos(parte.paragraphs, nombre_fuente, tamano_pt, mayusculas)
             _procesar_tablas(parte.tables, nombre_fuente, tamano_pt, mayusculas)
 
-    # Estilo "Normal": afecta cualquier texto nuevo o sin formato explícito
     estilo_normal = documento.styles["Normal"]
     estilo_normal.font.name = nombre_fuente
     estilo_normal.font.size = Pt(tamano_pt)
@@ -105,235 +98,140 @@ def aplicar_fuente_global(documento, nombre_fuente=NOMBRE_FUENTE, tamano_pt=TAMA
 
 
 # -----------------------------
-# Fila de cuota (widget reutilizable)
+# Estado de las cuotas (equivalente a las filas dinámicas de customtkinter)
 # -----------------------------
-class FilaCuota(ctk.CTkFrame):
-    def __init__(self, master, on_eliminar):
-        super().__init__(master, fg_color="#f0f0f0", corner_radius=8)
+if "cuotas" not in st.session_state:
+    st.session_state.cuotas = [{"nombre": "", "monto": "", "monto_letras": "", "fecha": ""}]
 
-        self.nombre = ctk.CTkEntry(self, placeholder_text="Ej: Inicial / Cuota 1", width=160)
-        self.nombre.grid(row=0, column=0, padx=5, pady=8)
 
-        self.monto = ctk.CTkEntry(self, placeholder_text="Monto S/", width=110)
-        self.monto.grid(row=0, column=1, padx=5, pady=8)
+def agregar_cuota():
+    st.session_state.cuotas.append({"nombre": "", "monto": "", "monto_letras": "", "fecha": ""})
 
-        self.monto_letras = ctk.CTkEntry(self, placeholder_text="Monto en letras", width=220)
-        self.monto_letras.grid(row=0, column=2, padx=5, pady=8)
 
-        self.fecha = ctk.CTkEntry(self, placeholder_text="dd/mm/aaaa", width=110)
-        self.fecha.grid(row=0, column=3, padx=5, pady=8)
+def eliminar_cuota(idx):
+    if len(st.session_state.cuotas) <= 1:
+        st.warning("Debe haber al menos una cuota.")
+        return
+    st.session_state.cuotas.pop(idx)
 
-        self.btn_eliminar = ctk.CTkButton(
-            self, text="✕", width=30, fg_color="#d9534f", hover_color="#c9302c",
-            command=lambda: on_eliminar(self)
+
+# -----------------------------
+# Interfaz
+# -----------------------------
+st.title("📄 Nueva Promesa de Compraventa")
+
+st.subheader("Fecha del documento")
+col1, col2 = st.columns(2)
+dia = col1.text_input("Día")
+mes = col2.text_input("Mes")
+
+st.subheader("Datos del Promitente Comprador(a)")
+comprador = st.text_input("Nombre Completo")
+dni = st.text_input("DNI")
+celular = st.text_input("Celular")
+nacionalidad = st.text_input("Nacionalidad")
+estado_civil = st.text_input("Estado Civil")
+ocupacion = st.text_input("Ocupación")
+direccion = st.text_input("Dirección")
+provincia = st.text_input("Provincia")
+departamento = st.text_input("Departamento")
+
+st.subheader("Datos del Terreno y Precio")
+area = st.text_input("Área (M2)")
+lote = st.text_input("N° de Lote")
+precio = st.text_input("Precio total (S/)")
+precio_letras = st.text_input("Precio total en letras")
+monto_adicional = st.text_input("Monto para escritura pública (S/)")
+monto_adicional_letras = st.text_input("Monto para escritura pública (en letras)")
+
+st.subheader("Cuotas de pago")
+for i, cuota in enumerate(st.session_state.cuotas):
+    with st.container(border=True):
+        c1, c2, c3, c4, c5 = st.columns([2, 1.3, 2.4, 1.3, 0.6])
+        cuota["nombre"] = c1.text_input("Concepto", value=cuota["nombre"], key=f"nombre_{i}", placeholder="Ej: Inicial / Cuota 1")
+        cuota["monto"] = c2.text_input("Monto S/", value=cuota["monto"], key=f"monto_{i}")
+        cuota["monto_letras"] = c3.text_input("Monto en letras", value=cuota["monto_letras"], key=f"letras_{i}")
+        cuota["fecha"] = c4.text_input("Fecha", value=cuota["fecha"], key=f"fecha_{i}", placeholder="dd/mm/aaaa")
+        c5.write("")
+        c5.button("✕", key=f"del_{i}", on_click=eliminar_cuota, args=(i,))
+
+st.button("+ Agregar cuota", on_click=agregar_cuota)
+
+st.subheader("Contacto Adicional")
+adicional = st.text_input("Nombre del contacto adicional")
+parentesco = st.text_input("Parentesco")
+celular_adicional = st.text_input("Celular del contacto adicional")
+
+st.subheader("Ejecutivo Comercial")
+ejecutivo = st.text_input("Nombre del ejecutivo")
+dni_ejecutivo = st.text_input("DNI del ejecutivo")
+
+st.divider()
+
+if st.button("Generar Word", type="primary", use_container_width=True):
+    obligatorios = {
+        "Nombre del comprador": comprador,
+        "DNI": dni,
+        "Día": dia,
+        "Mes": mes,
+        "Precio": precio,
+    }
+    faltantes = [nombre for nombre, valor in obligatorios.items() if not valor.strip()]
+
+    if faltantes:
+        st.error("Completa: " + ", ".join(faltantes))
+    elif not os.path.exists(RUTA_PLANTILLA):
+        st.error(
+            f"No se encontró plantilla.docx en:\n{RUTA_PLANTILLA}\n\n"
+            "Sube el archivo plantilla.docx al mismo repositorio que app.py."
         )
-        self.btn_eliminar.grid(row=0, column=4, padx=5, pady=8)
-
-    def obtener_datos(self):
-        return {
-            "nombre": self.nombre.get().strip(),
-            "monto": self.monto.get().strip(),
-            "monto_letras": self.monto_letras.get().strip(),
-            "fecha": self.fecha.get().strip(),
-        }
-
-
-# -----------------------------
-# Formulario principal
-# -----------------------------
-class Formulario(ctk.CTkToplevel):
-    def __init__(self, master):
-        super().__init__(master)
-        self.title("Nueva Promesa de Compraventa")
-        self.geometry("950x750")
-
-        self.filas_cuotas = []
-
-        contenedor = ctk.CTkScrollableFrame(self, width=900, height=700)
-        contenedor.pack(fill="both", expand=True, padx=10, pady=10)
-
-        ctk.CTkLabel(contenedor, text="PROMESA DE COMPRAVENTA",
-                     font=("Arial", 24, "bold")).pack(pady=(5, 15))
-
-        # ---------- Fecha del documento ----------
-        self._titulo_seccion(contenedor, "Fecha del documento")
-        fila = ctk.CTkFrame(contenedor, fg_color="transparent")
-        fila.pack(pady=5)
-        self.dia = self._campo_horizontal(fila, "Día", 0, ancho=80)
-        self.mes = self._campo_horizontal(fila, "Mes", 1, ancho=140)
-
-        # ---------- Datos del comprador ----------
-        self._titulo_seccion(contenedor, "Datos del Promitente Comprador(a)")
-        self.comprador = self._campo(contenedor, "Nombre Completo")
-        self.dni = self._campo(contenedor, "DNI")
-        self.celular = self._campo(contenedor, "Celular")
-        self.nacionalidad = self._campo(contenedor, "Nacionalidad")
-        self.estado_civil = self._campo(contenedor, "Estado Civil")
-        self.ocupacion = self._campo(contenedor, "Ocupación")
-        self.direccion = self._campo(contenedor, "Dirección")
-        self.provincia = self._campo(contenedor, "Provincia")
-        self.departamento = self._campo(contenedor, "Departamento")
-
-        # ---------- Datos del terreno / precio ----------
-        self._titulo_seccion(contenedor, "Datos del Terreno y Precio")
-        self.area = self._campo(contenedor, "Área (M2)")
-        self.lote = self._campo(contenedor, "N° de Lote")
-        self.precio = self._campo(contenedor, "Precio total (S/)")
-        self.precio_letras = self._campo(contenedor, "Precio total en letras")
-        self.monto_adicional = self._campo(contenedor, "Monto para escritura pública (S/)")
-        self.monto_adicional_letras = self._campo(contenedor, "Monto para escritura pública (en letras)")
-
-        # ---------- Cuotas ----------
-        self._titulo_seccion(contenedor, "Cuotas de pago")
-        self.frame_cuotas = ctk.CTkFrame(contenedor, fg_color="transparent")
-        self.frame_cuotas.pack(fill="x", pady=5)
-
-        ctk.CTkButton(contenedor, text="+ Agregar cuota",
-                      command=self.agregar_cuota).pack(pady=(0, 15))
-        self.agregar_cuota()  # una fila inicial
-
-        # ---------- Contacto adicional ----------
-        self._titulo_seccion(contenedor, "Contacto Adicional")
-        self.adicional = self._campo(contenedor, "Nombre del contacto adicional")
-        self.parentesco = self._campo(contenedor, "Parentesco")
-        self.celular_adicional = self._campo(contenedor, "Celular del contacto adicional")
-
-        # ---------- Ejecutivo comercial ----------
-        self._titulo_seccion(contenedor, "Ejecutivo Comercial")
-        self.ejecutivo = self._campo(contenedor, "Nombre del ejecutivo")
-        self.dni_ejecutivo = self._campo(contenedor, "DNI del ejecutivo")
-
-        # ---------- Botón generar ----------
-        ctk.CTkButton(contenedor, text="Generar Word", height=45,
-                      font=("Arial", 15, "bold"),
-                      command=self.generar_word).pack(pady=25)
-
-    # --- helpers de UI ---
-    def _titulo_seccion(self, master, texto):
-        ctk.CTkLabel(master, text=texto, font=("Arial", 16, "bold"),
-                     text_color="#1f538d").pack(pady=(20, 5), anchor="w", padx=10)
-
-    def _campo(self, master, etiqueta, ancho=500):
-        ctk.CTkLabel(master, text=etiqueta).pack(anchor="w", padx=10)
-        entry = ctk.CTkEntry(master, width=ancho)
-        entry.pack(pady=(0, 8), padx=10)
-        return entry
-
-    def _campo_horizontal(self, master, etiqueta, columna, ancho=120):
-        sub = ctk.CTkFrame(master, fg_color="transparent")
-        sub.grid(row=0, column=columna, padx=10)
-        ctk.CTkLabel(sub, text=etiqueta).pack()
-        entry = ctk.CTkEntry(sub, width=ancho)
-        entry.pack()
-        return entry
-
-    # --- cuotas dinámicas ---
-    def agregar_cuota(self):
-        fila = FilaCuota(self.frame_cuotas, self.eliminar_cuota)
-        fila.pack(pady=3, fill="x")
-        self.filas_cuotas.append(fila)
-
-    def eliminar_cuota(self, fila):
-        if len(self.filas_cuotas) <= 1:
-            messagebox.showwarning("Aviso", "Debe haber al menos una cuota.")
-            return
-        fila.destroy()
-        self.filas_cuotas.remove(fila)
-
-    # --- generación del documento ---
-    def generar_word(self):
-        # Validación básica de campos obligatorios
-        obligatorios = {
-            "Nombre del comprador": self.comprador.get(),
-            "DNI": self.dni.get(),
-            "Día": self.dia.get(),
-            "Mes": self.mes.get(),
-            "Precio": self.precio.get(),
-        }
-        faltantes = [nombre for nombre, valor in obligatorios.items() if not valor.strip()]
-        if faltantes:
-            messagebox.showerror("Faltan datos", "Completa: " + ", ".join(faltantes))
-            return
-
-        if not os.path.exists(RUTA_PLANTILLA):
-            messagebox.showerror(
-                "Plantilla no encontrada",
-                f"No se encontró plantilla.docx en:\n{RUTA_PLANTILLA}\n\n"
-                "Coloca el archivo plantilla.docx junto a este script."
-            )
-            return
-
-        cuotas = [f.obtener_datos() for f in self.filas_cuotas]
-
+    else:
         contexto = {
-            "dia": self.dia.get().strip(),
-            "mes": self.mes.get().strip(),
-            "comprador": self.comprador.get().strip(),
-            "dni": self.dni.get().strip(),
-            "celular": self.celular.get().strip(),
-            "nacionalidad": self.nacionalidad.get().strip(),
-            "ocupacion": self.ocupacion.get().strip(),
-            "estado_civil": self.estado_civil.get().strip(),
-            "direccion": self.direccion.get().strip(),
-            "provincia": self.provincia.get().strip(),
-            "departamento": self.departamento.get().strip(),
-            "area": self.area.get().strip(),
-            "lote": self.lote.get().strip(),
-            "precio": self.precio.get().strip(),
-            "precio_letras": self.precio_letras.get().strip(),
-            "monto_adicional": self.monto_adicional.get().strip(),
-            "monto_adicional_letras": self.monto_adicional_letras.get().strip(),
-            "cuotas": cuotas,
-            "adicional": self.adicional.get().strip(),
-            "parentesco": self.parentesco.get().strip(),
-            "celular_adicional": self.celular_adicional.get().strip(),
-            "ejecutivo": self.ejecutivo.get().strip(),
-            "dni_ejecutivo": self.dni_ejecutivo.get().strip(),
+            "dia": dia.strip(),
+            "mes": mes.strip(),
+            "comprador": comprador.strip(),
+            "dni": dni.strip(),
+            "celular": celular.strip(),
+            "nacionalidad": nacionalidad.strip(),
+            "ocupacion": ocupacion.strip(),
+            "estado_civil": estado_civil.strip(),
+            "direccion": direccion.strip(),
+            "provincia": provincia.strip(),
+            "departamento": departamento.strip(),
+            "area": area.strip(),
+            "lote": lote.strip(),
+            "precio": precio.strip(),
+            "precio_letras": precio_letras.strip(),
+            "monto_adicional": monto_adicional.strip(),
+            "monto_adicional_letras": monto_adicional_letras.strip(),
+            "cuotas": [
+                {k: v.strip() for k, v in c.items()} for c in st.session_state.cuotas
+            ],
+            "adicional": adicional.strip(),
+            "parentesco": parentesco.strip(),
+            "celular_adicional": celular_adicional.strip(),
+            "ejecutivo": ejecutivo.strip(),
+            "dni_ejecutivo": dni_ejecutivo.strip(),
         }
-
-        # Pedir dónde guardar
-        nombre_sugerido = f"Promesa_Compraventa_{contexto['comprador'].replace(' ', '_') or 'documento'}.docx"
-        ruta_salida = filedialog.asksaveasfilename(
-            defaultextension=".docx",
-            initialfile=nombre_sugerido,
-            filetypes=[("Documento Word", "*.docx")],
-            title="Guardar documento generado"
-        )
-        if not ruta_salida:
-            return  # el usuario canceló
 
         try:
             doc = DocxTemplate(RUTA_PLANTILLA)
             doc.render(contexto)
-            # Forzar Aptos 11 en TODO el documento generado
             aplicar_fuente_global(doc.docx, NOMBRE_FUENTE, TAMANO_FUENTE)
-            doc.save(ruta_salida)
+
+            buffer = io.BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
+
+            nombre_sugerido = f"Promesa_Compraventa_{comprador.strip().replace(' ', '_') or 'documento'}.docx"
+
+            st.success("Documento generado correctamente.")
+            st.download_button(
+                label="⬇️ Descargar documento",
+                data=buffer,
+                file_name=nombre_sugerido,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
         except Exception as e:
-            messagebox.showerror("Error al generar", f"Ocurrió un error:\n{e}")
-            return
-
-        messagebox.showinfo("Listo", f"Documento generado correctamente en:\n{ruta_salida}")
-
-
-# -----------------------------
-# Ventana principal
-# -----------------------------
-class App(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("Sistema de Promesas")
-        self.geometry("900x600")
-
-        ctk.CTkLabel(self, text="PROMESA DE COMPRAVENTA",
-                     font=("Arial", 30, "bold")).pack(pady=50)
-
-        ctk.CTkButton(self, text="Nuevo Documento", width=250, height=50,
-                      command=self.nuevo_documento).pack()
-
-    def nuevo_documento(self):
-        Formulario(self)
-
-
-if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+            st.error(f"Ocurrió un error al generar el documento:\n{e}")
